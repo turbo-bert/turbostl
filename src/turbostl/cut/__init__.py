@@ -6,17 +6,39 @@ import matplotlib.pyplot
 from trimesh.path.entities import Line, Arc, Bezier
 import matplotlib.image as mpimg
 import qrcode
+import math
 
 
 def main():
     turbocore.cli_this(__name__, 'cli_')
 
 
-def cli_xy(STLFILE, LAYOUT, Z, TITLE, SUBTITLE, PDF):
+def cli_xy(STLFILE, LAYOUT, Z, TITLE, SUBTITLE, RX, RY, PDF):
     filename = STLFILE
     mesh = trimesh.Trimesh()
     if STLFILE != "":
         mesh = trimesh.load(filename)
+
+
+    angle_x = float(int(RX))*math.pi / 2  # 90 Grad in Radiant
+    rotation_matrix_x = trimesh.transformations.rotation_matrix(
+        angle=angle_x,
+        direction=[1, 0, 0],  # Y-Achse
+        point=[0, 0, 0]       # Rotationszentrum
+    )
+
+    angle_y = float(int(RY))*math.pi / 2  # 90 Grad in Radiant
+    rotation_matrix_y = trimesh.transformations.rotation_matrix(
+        angle=angle_y,
+        direction=[0, 1, 0],  # Y-Achse
+        point=[0, 0, 0]       # Rotationszentrum
+    )
+
+    if RX != "0":
+        mesh.apply_transform(rotation_matrix_x)
+    
+    if RY != "0":
+        mesh.apply_transform(rotation_matrix_y)
 
     width = 210
     height = 297
@@ -26,6 +48,16 @@ def cli_xy(STLFILE, LAYOUT, Z, TITLE, SUBTITLE, PDF):
     fig, ax = matplotlib.pyplot.subplots(figsize=(width_inch, height_inch))
     ax = fig.add_axes([0, 0, 1, 1])
 
+    min_xyz, max_xyz = mesh.bounds
+
+    # center_slice = ((min_xyz + max_xyz) / 2)[:2]
+    center_page = np.array([width/2, height/2])
+    
+    slices = []
+    all_vertices_xy = []    
+    
+    #global_shift = center_page - center_slice
+
     for z in Z.split(","):
         plane_origin = [0,0,float(z)]
         plane_normal = [0,0,1]
@@ -33,39 +65,46 @@ def cli_xy(STLFILE, LAYOUT, Z, TITLE, SUBTITLE, PDF):
         section = mesh.section(plane_origin=plane_origin,plane_normal=plane_normal)
 
         if section is not None:
-            slice_2d, to_3d = section.to_planar()
+            #slice_2d, to_3d = section.to_planar()
 
-            min_xy, max_xy = slice_2d.bounds
-            # print(slice_2d.bounds)
-            # print(min_xy)
-            center_slice = (min_xy + max_xy) / 2
-            center_page = np.array([width/2, height/2])
-            shift = center_page - center_slice
+            path3d = section
+            vertices_3d = path3d.vertices
+            vertices_xy = vertices_3d[:, :2]
 
-            if LAYOUT == "auto":
-                slice_2d.apply_translation(shift)
-            else:
-                layout_cols_s = LAYOUT.split(",")
-                l_mode = layout_cols_s[0]
+            slices.append((path3d, vertices_xy))
+            all_vertices_xy.append(vertices_xy)
 
-                if l_mode == "o":
-                    # o,10,10 # origin x=10, y=10
-                    dx = float(layout_cols_s[1])
-                    dy = float(layout_cols_s[2])
-                    shift = np.array([dx,dy])
-                    slice_2d.apply_translation(shift)
+    all_vertices_xy = np.vstack(all_vertices_xy)
+    min_xy_all = all_vertices_xy.min(axis=0)
+    max_xy_all = all_vertices_xy.max(axis=0)
+    center_all_slices = (min_xy_all + max_xy_all) / 2
+            
+    global_shift = np.zeros(2)
+    if LAYOUT == "auto":
+        global_shift = center_page - center_all_slices
+    else:
+        layout_cols_s = LAYOUT.split(",")
+        l_mode = layout_cols_s[0]
 
-                if l_mode == "bb":
-                    # bb,20,30 # bounding box x=20, y=30
-                    dx = float(layout_cols_s[1])
-                    dy = float(layout_cols_s[2])
-                    shift = min_xy * (-1) + np.array([dx, dy])
-                    slice_2d.apply_translation(shift)
+        if l_mode == "o":
+            # o,10,10 # origin x=10, y=10
+            dx = float(layout_cols_s[1])
+            dy = float(layout_cols_s[2])
+            global_shift = np.array([dx, dy])
 
-            discretized = slice_2d.discrete
-            for segment in discretized:
-                xs, ys = segment[:, 0], segment[:, 1]
-                ax.plot(xs,ys,color="black", linewidth=0.8)
+        if l_mode == "bb":
+            # bb,20,30 # bounding box x=20, y=30
+            dx = float(layout_cols_s[1])
+            dy = float(layout_cols_s[2])
+            global_shift = -min_xy_all + np.array([dx, dy])
+            
+    for path3d, vertices_xy in slices:
+        path3d.apply_translation(np.append(global_shift, 0.0))
+        discretized = path3d.discrete
+
+        for segment in discretized:
+            xs, ys = segment[:, 0], segment[:, 1]
+            ax.plot(xs,ys,color="black", linewidth=0.9)
         
     major_ticks = np.arange(0, max(width, height), 10)
     minor_ticks = np.arange(0, max(width, height), 1)
